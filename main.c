@@ -78,7 +78,6 @@ static int major;
 static struct class *kxo_class;
 static struct cdev kxo_cdev;
 
-static char draw_buffer[DRAWBUFFER_SIZE];
 
 /* Data are stored into a kfifo buffer before passing them to the userspace */
 static DECLARE_KFIFO_PTR(rx_fifo, unsigned char);
@@ -91,6 +90,22 @@ static DEFINE_MUTEX(read_lock);
 
 /* Wait queue to implement blocking I/O from userspace */
 static DECLARE_WAIT_QUEUE_HEAD(rx_wait);
+
+
+/*send the move event to kfifo*/
+static void send_move_event(int position, char turn, int reset)
+{
+    move_event_t move_event;
+    move_event.reset = reset;
+    move_event.player = turn == 'O' ? 1 : 0;
+    move_event.position = position;
+    unsigned int len =
+        kfifo_in(&rx_fifo, (unsigned char *) &move_event, sizeof(move_event));
+    if (unlikely(len < sizeof(move_event)) && printk_ratelimit())
+        pr_warn("%s: %zu bytes dropped\n", __func__, sizeof(move_event) - len);
+
+    pr_debug("kxo: %s: in %u/%u bytes\n", __func__, len, kfifo_len(&rx_fifo));
+}
 
 
 /* pack the chess board into uint32_t */
@@ -126,44 +141,6 @@ static void fast_buf_clear(void)
     fast_buf.head = fast_buf.tail = 0;
 }
 
-/* Workqueue handler: executed by a kernel thread */
-static void drawboard_work_func(struct work_struct *w)
-{
-    u32 board;
-    int cpu;
-
-    /* This code runs from a kernel thread, so softirqs and hard-irqs must
-     * be enabled.
-     */
-    WARN_ON_ONCE(in_softirq());
-    WARN_ON_ONCE(in_interrupt());
-
-    /* Pretend to simulate access to per-CPU data, disabling preemption
-     * during the pr_info().
-     */
-    cpu = get_cpu();
-    pr_info("kxo: [CPU#%d] %s\n", cpu, __func__);
-    put_cpu();
-
-    read_lock(&attr_obj.lock);
-    if (attr_obj.display == '0') {
-        read_unlock(&attr_obj.lock);
-        return;
-    }
-    read_unlock(&attr_obj.lock);
-
-    mutex_lock(&producer_lock);
-    board = pack_board(table);
-    mutex_unlock(&producer_lock);
-
-    /* Store data to the kfifo buffer */
-    mutex_lock(&consumer_lock);
-    kfifo_in(&rx_fifo, (unsigned char *) &board, sizeof(board));
-    mutex_unlock(&consumer_lock);
-
-    wake_up_interruptible(&rx_wait);
-}
-
 static char turn;
 static int finish;
 
@@ -186,8 +163,13 @@ static void ai_one_work_func(struct work_struct *w)
 
     smp_mb();
 
-    if (move != -1)
+    if (move != -1) {
         WRITE_ONCE(table[move], 'O');
+        mutex_lock(&consumer_lock);
+        send_move_event(move, 'O', 0);
+        mutex_unlock(&consumer_lock);
+        wake_up_interruptible(&rx_wait);
+    }
 
     WRITE_ONCE(turn, 'X');
     WRITE_ONCE(finish, 1);
@@ -220,8 +202,13 @@ static void ai_two_work_func(struct work_struct *w)
 
     smp_mb();
 
-    if (move != -1)
+    if (move != -1) {
         WRITE_ONCE(table[move], 'X');
+        mutex_lock(&consumer_lock);
+        send_move_event(move, 'X', 0);
+        mutex_unlock(&consumer_lock);
+        wake_up_interruptible(&rx_wait);
+    }
 
     WRITE_ONCE(turn, 'O');
     WRITE_ONCE(finish, 1);
@@ -241,7 +228,6 @@ static struct workqueue_struct *kxo_workqueue;
 /* Work item: holds a pointer to the function that is going to be executed
  * asynchronously.
  */
-static DECLARE_WORK(drawboard_work, drawboard_work_func);
 static DECLARE_WORK(ai_one_work, ai_one_work_func);
 static DECLARE_WORK(ai_two_work, ai_two_work_func);
 
@@ -274,7 +260,6 @@ static void game_tasklet_func(unsigned long __data)
         smp_wmb();
         queue_work(kxo_workqueue, &ai_two_work);
     }
-    queue_work(kxo_workqueue, &drawboard_work);
     tv_end = ktime_get();
 
     nsecs = (s64) ktime_to_ns(ktime_sub(tv_end, tv_start));
@@ -318,22 +303,15 @@ static void timer_handler(struct timer_list *__timer)
         mod_timer(&timer, jiffies + msecs_to_jiffies(delay));
     } else {
         read_lock(&attr_obj.lock);
-        if (attr_obj.display == '1') {
-            int cpu = get_cpu();
-            pr_info("kxo: [CPU#%d] Drawing final board\n", cpu);
-            put_cpu();
+        int cpu = get_cpu();
+        pr_info("kxo: [CPU#%d] Drawing final board\n", cpu);
+        put_cpu();
 
-            mutex_lock(&producer_lock);
-            u32 board = pack_board(table);
-            mutex_unlock(&producer_lock);
-
-            /* Store data to the kfifo buffer */
-            mutex_lock(&consumer_lock);
-            kfifo_in(&rx_fifo, (unsigned char *) &board, sizeof(board));
-            mutex_unlock(&consumer_lock);
-
-            wake_up_interruptible(&rx_wait);
-        }
+        /* Store data to the kfifo buffer */
+        mutex_lock(&consumer_lock);
+        send_move_event(0, ' ', 1);
+        mutex_unlock(&consumer_lock);
+        wake_up_interruptible(&rx_wait);
 
         if (attr_obj.end == '0') {
             memset(table, ' ',

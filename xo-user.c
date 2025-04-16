@@ -15,14 +15,9 @@
 #define XO_DEVICE_FILE "/dev/kxo"
 #define XO_DEVICE_ATTR_FILE "/sys/class/kxo/kxo/kxo_state"
 
-typedef uint32_t u32;
+#define GET_INDEX(i, j) ((i) * (BOARD_SIZE) + (j))
 
-static inline char decode_cell(u32 board, int index)
-{
-    int bits = (board >> (index * 2)) & 3;
-    return bits == 1 ? 'O' : (bits == 2 ? 'X' : ' ');
-}
-
+char board[N_GRIDS];
 static inline void print_hline(void)
 {
     for (int i = 0; i < BOARD_SIZE * 2 - 1; ++i)
@@ -31,12 +26,12 @@ static inline void print_hline(void)
 }
 
 
-void print_board(u32 board)
+void print_board()
 {
     printf("\033[H\033[J");  // clear screen
     for (int r = 0; r < BOARD_SIZE; ++r) {
         for (int c = 0; c < BOARD_SIZE; ++c) {
-            putchar(decode_cell(board, r * BOARD_SIZE + c));
+            putchar(board[GET_INDEX(r, c)]);
             if (c != BOARD_SIZE - 1)
                 putchar('|');
         }
@@ -125,7 +120,7 @@ int main(int argc, char *argv[])
     fcntl(STDIN_FILENO, F_SETFL, flags | O_NONBLOCK);
 
     // char display_buf[DRAWBUFFER_SIZE];
-    u32 board_buf;
+    move_event_t move_event;
 
     fd_set readset;
     int device_fd = open(XO_DEVICE_FILE, O_RDONLY);
@@ -133,6 +128,7 @@ int main(int argc, char *argv[])
     read_attr = true;
     end_attr = false;
 
+    memset(board, ' ', N_GRIDS);
     while (!end_attr) {
         FD_ZERO(&readset);
         FD_SET(STDIN_FILENO, &readset);
@@ -147,11 +143,21 @@ int main(int argc, char *argv[])
         if (FD_ISSET(STDIN_FILENO, &readset)) {
             FD_CLR(STDIN_FILENO, &readset);
             listen_keyboard_handler();
-        } else if (read_attr && FD_ISSET(device_fd, &readset)) {
+        }
+        if (FD_ISSET(device_fd, &readset)) {
             FD_CLR(device_fd, &readset);
-            ssize_t n = read(device_fd, &board_buf, sizeof(board_buf));
-            if (n == sizeof(board_buf))
-                print_board(board_buf);
+            read(device_fd, &move_event, sizeof(move_event));
+            if (move_event.reset) {
+                memset(board, ' ', N_GRIDS);
+            } else {
+                if (move_event.player == 0) {
+                    board[move_event.position] = 'X';
+                } else {
+                    board[move_event.position] = 'O';
+                }
+            }
+            if (read_attr)
+                print_board();
         }
     }
 

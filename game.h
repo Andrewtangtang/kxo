@@ -17,6 +17,28 @@ typedef struct {
     int i_lower_bound, j_lower_bound, i_upper_bound, j_upper_bound;
 } line_t;
 
+// Define structure based on board size
+#if N_GRIDS <= 64  // Maximum 8x8 board
+typedef struct {
+    uint8_t reset : 1;
+    uint8_t player : 1;    // 0 for 'X', 1 for 'O'
+    uint8_t position : 6;  // 6 bits sufficient for 0-63
+} __attribute__((packed)) move_event_t;
+#elif N_GRIDS <= 256  // Maximum 16x16 board
+typedef struct {
+    uint8_t reset : 1;
+    uint8_t player : 1;     // 0 for 'X', 1 for 'O'
+    uint16_t position : 8;  // 8 bits sufficient for 0-255
+} __attribute__((packed)) move_event_t;
+#else                 // Larger boards
+typedef struct {
+    uint8_t reset : 1;
+    uint8_t player : 1;  // 0 for 'X', 1 for 'O'
+    uint16_t position;   // Full 16 bits
+} __attribute__((packed)) move_event_t;
+#endif
+
+
 /* Self-defined fixed-point type, using last 10 bits as fractional bits,
  * starting from lsb */
 #define FIXED_SCALE_BITS 8
