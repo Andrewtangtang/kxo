@@ -1,6 +1,7 @@
 #include <fcntl.h>
 #include <getopt.h>
 #include <stdbool.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -13,6 +14,38 @@
 #define XO_STATUS_FILE "/sys/module/kxo/initstate"
 #define XO_DEVICE_FILE "/dev/kxo"
 #define XO_DEVICE_ATTR_FILE "/sys/class/kxo/kxo/kxo_state"
+
+typedef uint32_t u32;
+
+static inline char decode_cell(u32 board, int index)
+{
+    int bits = (board >> (index * 2)) & 3;
+    return bits == 1 ? 'O' : (bits == 2 ? 'X' : ' ');
+}
+
+static inline void print_hline(void)
+{
+    for (int i = 0; i < BOARD_SIZE * 2 - 1; ++i)
+        putchar('-');
+    putchar('\n');
+}
+
+
+void print_board(u32 board)
+{
+    printf("\033[H\033[J");  // clear screen
+    for (int r = 0; r < BOARD_SIZE; ++r) {
+        for (int c = 0; c < BOARD_SIZE; ++c) {
+            putchar(decode_cell(board, r * BOARD_SIZE + c));
+            if (c != BOARD_SIZE - 1)
+                putchar('|');
+        }
+        putchar('\n');
+        if (r != BOARD_SIZE - 1)
+            print_hline();
+    }
+}
+
 
 static bool status_check(void)
 {
@@ -91,7 +124,8 @@ int main(int argc, char *argv[])
     int flags = fcntl(STDIN_FILENO, F_GETFL, 0);
     fcntl(STDIN_FILENO, F_SETFL, flags | O_NONBLOCK);
 
-    char display_buf[DRAWBUFFER_SIZE];
+    // char display_buf[DRAWBUFFER_SIZE];
+    u32 board_buf;
 
     fd_set readset;
     int device_fd = open(XO_DEVICE_FILE, O_RDONLY);
@@ -115,9 +149,9 @@ int main(int argc, char *argv[])
             listen_keyboard_handler();
         } else if (read_attr && FD_ISSET(device_fd, &readset)) {
             FD_CLR(device_fd, &readset);
-            printf("\033[H\033[J"); /* ASCII escape code to clear the screen */
-            read(device_fd, display_buf, DRAWBUFFER_SIZE);
-            printf("%s", display_buf);
+            ssize_t n = read(device_fd, &board_buf, sizeof(board_buf));
+            if (n == sizeof(board_buf))
+                print_board(board_buf);
         }
     }
 

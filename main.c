@@ -92,14 +92,17 @@ static DEFINE_MUTEX(read_lock);
 /* Wait queue to implement blocking I/O from userspace */
 static DECLARE_WAIT_QUEUE_HEAD(rx_wait);
 
-/* Insert the whole chess board into the kfifo buffer */
-static void produce_board(void)
-{
-    unsigned int len = kfifo_in(&rx_fifo, draw_buffer, sizeof(draw_buffer));
-    if (unlikely(len < sizeof(draw_buffer)) && printk_ratelimit())
-        pr_warn("%s: %zu bytes dropped\n", __func__, sizeof(draw_buffer) - len);
 
-    pr_debug("kxo: %s: in %u/%u bytes\n", __func__, len, kfifo_len(&rx_fifo));
+/* pack the chess board into uint32_t */
+static inline u32 pack_board(const char *table)
+{
+    u32 out = 0;
+    for (int i = 0; i < N_GRIDS; ++i) {
+        u32 v = table[i] == 'O' ? 1 : (table[i] == 'X' ? 2 : 0);
+        out |= (v << (i * 2));
+    }
+    pr_debug("kxo: %s: %u\n", __func__, out);
+    return out;
 }
 
 /* Mutex to serialize kfifo writers within the workqueue handler */
@@ -117,34 +120,6 @@ static struct circ_buf fast_buf;
 
 static char table[N_GRIDS];
 
-/* Draw the board into draw_buffer */
-static int draw_board(char *table)
-{
-    int i = 0, k = 0;
-    draw_buffer[i++] = '\n';
-    smp_wmb();
-    draw_buffer[i++] = '\n';
-    smp_wmb();
-
-    while (i < DRAWBUFFER_SIZE) {
-        for (int j = 0; j < (BOARD_SIZE << 1) - 1 && k < N_GRIDS; j++) {
-            draw_buffer[i++] = j & 1 ? '|' : table[k++];
-            smp_wmb();
-        }
-        draw_buffer[i++] = '\n';
-        smp_wmb();
-        for (int j = 0; j < (BOARD_SIZE << 1) - 1; j++) {
-            draw_buffer[i++] = '-';
-            smp_wmb();
-        }
-        draw_buffer[i++] = '\n';
-        smp_wmb();
-    }
-
-
-    return 0;
-}
-
 /* Clear all data from the circular buffer fast_buf */
 static void fast_buf_clear(void)
 {
@@ -154,6 +129,7 @@ static void fast_buf_clear(void)
 /* Workqueue handler: executed by a kernel thread */
 static void drawboard_work_func(struct work_struct *w)
 {
+    u32 board;
     int cpu;
 
     /* This code runs from a kernel thread, so softirqs and hard-irqs must
@@ -177,12 +153,12 @@ static void drawboard_work_func(struct work_struct *w)
     read_unlock(&attr_obj.lock);
 
     mutex_lock(&producer_lock);
-    draw_board(table);
+    board = pack_board(table);
     mutex_unlock(&producer_lock);
 
     /* Store data to the kfifo buffer */
     mutex_lock(&consumer_lock);
-    produce_board();
+    kfifo_in(&rx_fifo, (unsigned char *) &board, sizeof(board));
     mutex_unlock(&consumer_lock);
 
     wake_up_interruptible(&rx_wait);
@@ -348,12 +324,12 @@ static void timer_handler(struct timer_list *__timer)
             put_cpu();
 
             mutex_lock(&producer_lock);
-            draw_board(table);
+            u32 board = pack_board(table);
             mutex_unlock(&producer_lock);
 
             /* Store data to the kfifo buffer */
             mutex_lock(&consumer_lock);
-            produce_board();
+            kfifo_in(&rx_fifo, (unsigned char *) &board, sizeof(board));
             mutex_unlock(&consumer_lock);
 
             wake_up_interruptible(&rx_wait);
