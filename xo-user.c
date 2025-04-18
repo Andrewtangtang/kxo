@@ -7,6 +7,7 @@
 #include <string.h>
 #include <sys/select.h>
 #include <termios.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "game.h"
@@ -28,6 +29,13 @@ static inline void print_hline(void)
 
 void print_board()
 {
+    time_t now;
+    time(&now);  // get current time
+    const struct tm *local_time = localtime(&now);
+    char time_str[20];
+
+    // format time as HH:MM:SS
+    strftime(time_str, sizeof(time_str), "%H:%M:%S", local_time);
     printf("\033[H\033[J");  // clear screen
     for (int r = 0; r < BOARD_SIZE; ++r) {
         for (int c = 0; c < BOARD_SIZE; ++c) {
@@ -39,6 +47,10 @@ void print_board()
         if (r != BOARD_SIZE - 1)
             print_hline();
     }
+    for (int i = 0; i < BOARD_SIZE * 2 - 1; ++i)
+        putchar('=');
+    putchar('\n');
+    printf("Current Time: %s\n", time_str);
 }
 
 
