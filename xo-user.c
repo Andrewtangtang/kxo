@@ -11,6 +11,7 @@
 #include <unistd.h>
 
 #include "game.h"
+#include "log.h"
 
 #define XO_STATUS_FILE "/sys/module/kxo/initstate"
 #define XO_DEVICE_FILE "/dev/kxo"
@@ -133,6 +134,9 @@ int main(int argc, char *argv[])
 
     // char display_buf[DRAWBUFFER_SIZE];
     move_event_t move_event;
+    game_record_list_t game_list;
+    init_game_list(&game_list);
+    add_new_game(&game_list);
 
     fd_set readset;
     int device_fd = open(XO_DEVICE_FILE, O_RDONLY);
@@ -161,18 +165,26 @@ int main(int argc, char *argv[])
             read(device_fd, &move_event, sizeof(move_event));
             if (move_event.reset) {
                 memset(board, ' ', N_GRIDS);
+                add_new_game(&game_list);
             } else {
                 if (move_event.player == 0) {
                     board[move_event.position] = 'X';
                 } else {
                     board[move_event.position] = 'O';
                 }
+                int gi = game_list.size - 1;               // current game index
+                int step = game_list.data[gi].move_count;  // current step
+                uint8_t p = move_event.position;           // current position
+                set_move(&game_list, gi, step, p);
             }
             if (read_attr)
                 print_board();
         }
     }
 
+    printf("\n\n\n");
+    print_game_list(&game_list);
+    free_game_list(&game_list);
     raw_mode_disable();
     fcntl(STDIN_FILENO, F_SETFL, flags);
 
